@@ -1,0 +1,93 @@
+name: AI Review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  ai_review:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Get PR diff
+        id: diff
+        uses: actions/github-script@v7
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          script: |
+            const pr = context.payload.pull_request;
+            const res = await fetch(pr.diff_url, {
+              headers: {
+                Authorization: `Bearer ${process.env.GITHUB_TOKEN}`,
+                Accept: "application/vnd.github.v3.diff"
+              }
+            });
+
+            if (!res.ok) {
+              throw new Error(`Failed to fetch diff: ${res.status}`);
+            }
+
+            let diff = await res.text();
+            const max = 12000;
+            if (diff.length > max) {
+              diff = diff.slice(0, max) + "\n\n[diff truncated]";
+            }
+
+            // ✅ 写入文件，而不是 setOutput 给 shell
+            const fs = require("fs");
+            fs.writeFileSync("pr.diff", diff, "utf8");
+
+      - name: Build LLM payload
+        run: |
+          set -e
+
+          DIFF_CONTENT="$(cat pr.diff)"
+
+          jq -n \
+            --arg diff "$DIFF_CONTENT" \
+            '{
+              model: "anthropic/claude-sonnet-4.5",
+              messages: [
+                {
+                  role: "system",
+                  content: "你是严格的代码审查员。请按：总体评价、风险点（安全/性能/并发/兼容性）、可维护性建议、可测试性建议、可能的 bug、必须修改项 / 可选项 输出。尽量引用 diff 中的具体行或片段。"
+                },
+                {
+                  role: "user",
+                  content: ("请 review 这个 PR diff：\n\n" + $diff)
+                }
+              ]
+            }' > payload.json
+
+      - name: Call LLM
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+        run: |
+          set -e
+
+          curl -sS https://openrouter.ai/api/v1/chat/completions \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer $OPENROUTER_API_KEY" \
+            -d @payload.json \
+            | tee response.json
+
+          jq -r '.choices[0].message.content' response.json > review.txt
+
+      - name: Comment review on PR
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require("fs");
+            const body = fs.readFileSync("review.txt", "utf8");
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: "## AI Review\n\n" + body
+            });
