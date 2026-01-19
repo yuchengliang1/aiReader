@@ -53,14 +53,14 @@ jobs:
 
           curl https://openrouter.ai/api/v1/chat/completions \
             -H "Content-Type: application/json" \
-            -H "Authorization: Bearer $Claude_API_Key" \
+            -H "Authorization: Bearer $OPENROUTER_API_KEY" \
             -d @payload.json \
             | tee response.json
 
           # 抽取文本（根据接口返回格式可能需要调整）
           cat response.json | jq -r '.output[0].content[0].text' > review.txt
         env:
-          Claude_API_Key: ${{ secrets.Claude_API_Key }}
+          OPENROUTER_API_Key: ${{ secrets.OPENROUTER_API_KEY }}
 
       - name: Comment review on PR
         uses: actions/github-script@v7
