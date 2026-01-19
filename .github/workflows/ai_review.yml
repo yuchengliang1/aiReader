@@ -21,9 +21,7 @@ jobs:
         with:
           script: |
             const pr = context.payload.pull_request;
-            const diffUrl = pr.diff_url;
-
-            const res = await fetch(diffUrl, {
+            const res = await fetch(pr.diff_url, {
               headers: {
                 Authorization: `Bearer ${process.env.GITHUB_TOKEN}`,
                 Accept: "application/vnd.github.v3.diff"
@@ -34,23 +32,24 @@ jobs:
               throw new Error(`Failed to fetch diff: ${res.status}`);
             }
 
-            const diffText = await res.text();
-
+            let diff = await res.text();
             const max = 12000;
-            const trimmed =
-              diffText.length > max
-                ? diffText.slice(0, max) + "\n\n[diff truncated]"
-                : diffText;
+            if (diff.length > max) {
+              diff = diff.slice(0, max) + "\n\n[diff truncated]";
+            }
 
-            core.setOutput("diff", trimmed);
+            // ✅ 写入文件，而不是 setOutput 给 shell
+            const fs = require("fs");
+            fs.writeFileSync("pr.diff", diff, "utf8");
 
-      - name: Build LLM request payload
-        id: payload
+      - name: Build LLM payload
         run: |
           set -e
 
+          DIFF_CONTENT="$(cat pr.diff)"
+
           jq -n \
-            --arg diff "${{ steps.diff.outputs.diff }}" \
+            --arg diff "$DIFF_CONTENT" \
             '{
               model: "anthropic/claude-sonnet-4.5",
               messages: [
@@ -65,8 +64,7 @@ jobs:
               ]
             }' > payload.json
 
-      - name: Call LLM for review
-        id: llm
+      - name: Call LLM
         env:
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
         run: |
@@ -91,5 +89,5 @@ jobs:
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number: context.issue.number,
-              body: "## 🤖 AI Review\n\n" + body
+              body: "## AI Review\n\n" + body
             });
